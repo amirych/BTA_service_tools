@@ -25,7 +25,12 @@ namespace po = boost::program_options;
 #define ROTCEN_ERROR_CANNOT_CREATE_FILE 90
 
 
-#define ROTCEN_SEX_PARAM_FILE "sex.param"
+static string ROTCEN_SEX_PARAM_FILE="sex.param";
+
+static string ROTCEN_SEX_EXE = "sex";
+static string ROTCEN_AST_EXE = "solve-field";
+static string ROTCEN_MATCH_EXE = "sex";
+
 
 static string join_vector(vector<string> &vec)
 {
@@ -37,6 +42,7 @@ static string join_vector(vector<string> &vec)
 int main(int argc, char* argv[])
 {
 
+
     vector<float> sex_thresh(1,5.0); // sextractor's THRESH default value
     vector<float> match_tol(1,0.5); // default radius of coordinate matching. It is in arcsecs for astrometrical solution or
                                     // dimensionless value for 'match application' solution ('matchrad' parameter)
@@ -45,8 +51,9 @@ int main(int argc, char* argv[])
 
     vector<string> solve_field_pars = {"--no-plots"};
 
+    vector<string> match_pars = {""};
 
-    vector<string> sex_cat_prefix = {"detect"};
+    vector<string> sex_cat_prefix = {"obj_"};
 
     string input_list_filename;
 
@@ -60,7 +67,9 @@ int main(int argc, char* argv[])
         ("use-match,m","use of 'match' application instead of astrometry (explicitly set '-s' option)")
         ("use-sex,s","use of sextractor to detect objects (in case of astrometrical solution)")
         ("sex-pars",po::value<vector<string> >(), "sextractor's parameters")
-        ("solve-filed-pars",po::value<vector<string> >(), "'solve-field' parameters");
+        ("solve-filed-pars",po::value<vector<string> >(), "'solve-field' parameters")
+        ("match-pars",po::value<vector<string> >(), "'match' parameters")
+        ("dont-delete,d","do not delete temporary files");
 
 
     po::options_description hidden_opts("");
@@ -78,10 +87,13 @@ int main(int argc, char* argv[])
         po::store(po::command_line_parser(argc, argv).options(cmd_opts).positional(pos_arg).run(), vm);
 
         if ( vm.count("help") ) {
-//            cout << "Usage: " << basename(argv[0]) << " [-t num] [-h] input_list\n\n";
-            cout << "Usage: " << boost::filesystem::basename(argv[0]) << "[-h] [-t num] [-r num]    \
-                                                                          [--sex-pars] [--solve-field-pars]        \
-                                                                          [--use-match] [--use-sex] input_list\n\n";
+            string head_str = "Usage: " + boost::filesystem::basename(argv[0]);
+            string skip_str(head_str.length()+1,' ');
+
+            cout << head_str << " [-h] [-t num] [-r num] [-d] [--solve-field-pars]\n" << skip_str <<
+                                "[--use-match] [--match-pars] \n" << skip_str <<
+                                "[--use-sex] [--sex-pars] input_list\n\n";
+
             cout << visible_opts << "\n";
             return ROTCEN_ERROR_HELP;
         }
@@ -104,6 +116,11 @@ int main(int argc, char* argv[])
 
     // parse commandline options
 
+    bool dont_delete = false;
+    if ( vm.count("dont-delete") ) {
+        dont_delete = true;
+    }
+
     if ( vm.count("threshold") ) {
         sex_thresh = vm["threshold"].as<vector<float> >();
         for ( int i = 0; i < sex_thresh.size(); ++i ) cout << "THRESH = " << sex_thresh[i] << "\n";
@@ -116,11 +133,18 @@ int main(int argc, char* argv[])
     }
 
     if ( vm.count("sex-pars") ) {
-        sex_pars = vm["sex-pars"].as<vector<string> >();
+        sex_pars.erase(sex_pars.begin(),sex_pars.end());
+        sex_pars.push_back(vm["sex-pars"].as<vector<string> >().back());
     }
 
     if ( vm.count("solve-field-pars") ) {
-        solve_field_pars = vm["solve-filed-pars"].as<vector<string> >();
+        solve_field_pars.erase(solve_field_pars.begin(),solve_field_pars.end());
+        solve_field_pars.push_back(vm["solve-filed-pars"].as<vector<string> >().back());
+    }
+
+    if ( vm.count("match-pars") ) {
+        match_pars.erase(match_pars.begin(),match_pars.end());
+        match_pars.push_back(vm["match-pars"].as<vector<string> >().back());
     }
 
     if (vm.count("input-file")) {
@@ -145,7 +169,7 @@ int main(int argc, char* argv[])
 
         sex_pars.push_back("-GAIN 1.0");
         sex_pars.push_back("-PARAMETERS_NAME " + ROTCEN_SEX_PARAM_FILE);
-        sex_pars.push_back("-CATALOG_TYPE FITS_1.0");
+        sex_pars.push_back("-CATALOG_TYPE ASCII");
 
         // create SExtractor's parameter file
         ofstream sex_param_file;
@@ -184,56 +208,79 @@ int main(int argc, char* argv[])
 
 
     list<string> input_files;
+    list<string> sex_cats;
     string str;
 
     ifstream input_list_file;
-    input_list_file.open(input_list_filename.c_str());
-
-    if ( !input_list_file.good() ) {
-        cerr << "Cannot find file of input frames list!\n";
-        return ROTCEN_ERROR_INVALID_FILENAME;
-    }
 
     try {
+        input_list_file.open(input_list_filename.c_str());
+        if ( !input_list_file.good() ) {
+            cerr << "Cannot find file of input frames list!\n";
+            return ROTCEN_ERROR_INVALID_FILENAME;
+        }
+
         // check input files
         while ( input_list_file.good() ) {
             input_list_file >> str;
-            if ( !ifstream(str.c_str()).good() ) throw (int)ROTCEN_ERROR_INVALID_FILENAME;
+//            if ( !ifstream(str.c_str()).good() ) {
+            if ( !boost::filesystem::exists(str) ) {
+                cerr << "Cannot find " << str.c_str() << " input file!\n";
+                throw (int)ROTCEN_ERROR_INVALID_FILENAME;
+            }
             input_files.push_back(str);
         }
-    } catch (int err) {
+
         input_list_file.close();
-        cerr << "Cannot open " << str.c_str() << " input file!\n";
-        return err;
-    }
 
-    input_list_file.close();
+        if ( input_files.size() < 3 ) {
+            cerr << "At least 3 files must be given in the input list!\n";
+            throw (int)ROTCEN_ERROR_NOT_ENOUGH_FILES;
+        }
 
-    if ( input_files.size() < 3 ) {
-        cerr << "At least 3 files must be given in the input list!\n";
-        return ROTCEN_ERROR_NOT_ENOUGH_FILES;
-    }
+        // run object detection and astrometry
 
-    // run object detection and astrometry
-    for ( auto it_file = input_files.begin(); it_file != input_files.end(); ++it_file ) {
-        if ( use_match ) { // skip astrometry, just detect objects using sextractor
-            boost::filesystem::path pp = *it_file;
-            string path = pp.parent_path().string();
-            string file = boost::filesystem::basename(*it_file);
+        for ( auto it_file = input_files.begin(); it_file != input_files.end(); ++it_file ) {
+            if ( use_match ) { // skip astrometry, just detect objects using sextractor
+                boost::filesystem::path pp = *it_file;
+                string path = pp.parent_path().string();
+                string file = boost::filesystem::basename(*it_file);
 
-            file = path + sex_cat_prefix.back() + file + ".fits";
-            sex_pars.push_back("-CATALOG_NAME " + file);
-            string cmd_str = "sex " + join_vector(sex_pars) + *it_file + " >/dev/null 2>&1";
+                file = path + sex_cat_prefix.back() + file + ".cat";
+                sex_pars.push_back("-CATALOG_NAME " + file);
+                string cmd_str = ROTCEN_SEX_EXE + " " + join_vector(sex_pars) + " " + *it_file + " >/dev/null 2>&1";
 
-            int ret = system(cmd_str.c_str()); // try to run command 'sex' (Bertin's sextractor)
-            int exit_code = WEXITSTATUS(ret);
-            if ( ret == -1 || exit_code != 0 ) {
-                cerr << "Something wrong while run application 'sex'!\n";
-                return ROTCEN_ERROR_APP_FAILED;
+                int ret = system(cmd_str.c_str()); // try to run command 'sex' (Bertin's sextractor)
+                int exit_code = WEXITSTATUS(ret);
+                if ( ret == -1 || exit_code != 0 ) {
+                    cerr << "Something wrong while run application 'sex'!\n";
+                    throw (int)ROTCEN_ERROR_APP_FAILED;
+                }
+
+                sex_cats.push_back(file);
+                sex_pars.pop_back(); // delete "-CATALOG_NAME" parameter from commandline list
+            } else { // perform astrometry
+
             }
+        }
+
+        // matching objects
+
+        if ( use_match ) {
+
         } else {
 
         }
+
+    } catch (int err) {
+        input_list_file.close();
+        if ( use_match && !dont_delete ) { // delete temporary files
+            boost::filesystem::remove(ROTCEN_SEX_PARAM_FILE);
+            for (auto filename = sex_cats.begin(); filename != sex_cats.end(); ++filename) {
+                boost::filesystem::remove(*filename);
+            }
+        }
+        return err;
     }
 
 
