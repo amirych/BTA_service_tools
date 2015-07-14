@@ -11,8 +11,6 @@ using namespace std;
 
 #define MAX_STR_LEN 512
 
-typedef float real_t;
-
 //
 // The class inherited from ifstream
 // It adds the method ReadLine.
@@ -28,9 +26,9 @@ public:
 
     // inputs:
     //   N_elems - number of elements to be read;
-    //   outputs - N_elems pointers of real_t* types
+    //   outputs - N_elems pointers of double* types
     AsciiFileFlag ReadLine(size_t N_elems, ...);
-    AsciiFileFlag ReadLine(size_t N_elems, vector<real_t> &data);
+    AsciiFileFlag ReadLine(size_t N_elems, vector<double> *data);
 private:
     char CommentSymbol; // a char to be interpretated as comment symbol
                         // if inputs string starts by CommentSymbol it assumed to be a comment string

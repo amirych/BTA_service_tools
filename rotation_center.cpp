@@ -28,6 +28,7 @@ namespace po = boost::program_options;
 #define ROTCEN_ERROR_APP_FAILED 80
 #define ROTCEN_ERROR_CANNOT_CREATE_FILE 90
 #define ROTCEN_ERROR_BAD_DATA 100
+#define ROTCEN_ERROR_EMPTY_CAT 110
 
 
 static string ROTCEN_SEX_PARAM_FILE = "sex.param";
@@ -89,6 +90,33 @@ static int read_catalog(string &filename, size_t N_items, vector<vector<double> 
 
     cat.close();
     return ROTCEN_ERROR_OK;
+}
+
+
+/*
+    The function rearrange table of object IDs according to new vector of IDs for the first column.
+    The table rows will be permutted according to new order of ID numbers in the new_id vector.
+    NOTE: the algorithm assumes:
+               1) new_id contains of unique numbers
+               2) all numbers from new_id are members of table[0] vector
+*/
+static void rearrange_table(vector<vector<double> > &table, size_t last_col, vector<double> &new_id)
+{
+    size_t j;
+    double tmp;
+
+    for ( size_t i = 0; i < new_id.size(); ++i ) {
+        j = i;
+        while ( table[0].at(j) != new_id[i]) ++j;
+        for ( size_t k = 0; k <= last_col; ++k ) { // swap elements
+            tmp = table[k].at(i);
+            table[k].at(i) = table[k].at(j);
+            table[k].at(j) = tmp;
+        }
+    }
+    for ( size_t k = 0; k <= last_col; ++k ) { // resize table columns
+        table[k].resize(new_id.size());
+    }
 }
 
 
@@ -224,7 +252,7 @@ int main(int argc, char* argv[])
         use_match = true;
 
         if ( !vm.count("radius") ) { // use default value
-            match_tol = {4.0};
+            match_tol = {1.0};
         }
 
         sex_pars.push_back("-GAIN 1.0");
@@ -360,6 +388,8 @@ int main(int argc, char* argv[])
             obj_cat[1] = current_cat[1]; // X_IMAGE
             obj_cat[2] = current_cat[2]; // Y_IMAGE
 
+//            obj_id[0] = current_cat[0];
+
             string cmd_str;
             string pp = join_vector(match_pars);
 
@@ -375,12 +405,16 @@ int main(int argc, char* argv[])
                     cerr << "Something wrong while reading " << *it_file << " file!\n";
                     throw ret;
                 }
+                if ( current_cat[0].empty() ) {
+                    cerr << "Empty catalog in file " << *it_file << " file!\n";
+                    throw (int)ROTCEN_ERROR_EMPTY_CAT;
+                }
                 obj_cat[i_cat*3] = current_cat[0]; // NUMBER
                 obj_cat[i_cat*3+1] = current_cat[1]; // X_IMAGE
                 obj_cat[i_cat*3+2] = current_cat[2]; // Y_IMAGE
 
                 cmd_str = ROTCEN_MATCH_EXE + " " + ROTCEN_MATCH_REF_CAT + " 1 2 3 " + *it_file + " 1 2 3 " +
-                          pp + " matchrad=" + to_string(match_tol.back()) + " >/dev/null 2>&1";
+                        pp + " matchrad=" + to_string(match_tol.back()) + " >/dev/null 2>&1";
 
                 cout << "  Run match for " + *it_file + " ... ";
 
@@ -400,21 +434,40 @@ int main(int argc, char* argv[])
                     cerr << "Something wrong while reading matched.mtA file!\n";
                     throw ret;
                 }
-                // REARRANGE HERE!!!
-                obj_id[0] = current_cat[0];
+                if ( current_cat[0].empty() ) {
+                    cerr << "Empty catalog in file " << matchedA << " file!\n";
+                    throw (int)ROTCEN_ERROR_EMPTY_CAT;
+                }
+
+                cout << "    Matched " << current_cat[0].size() << " objects\n";
+
+                if ( i_cat > 1 ) rearrange_table(obj_id,i_cat-1,current_cat[0]); else obj_id[0] = current_cat[0];
 
                 ret = read_catalog(matchedB, 1, current_cat);
                 if ( ret != ROTCEN_ERROR_OK ) {
                     cerr << "Something wrong while reading matched.mtB file!\n";
                     throw ret;
                 }
+                if ( current_cat[0].empty() ) {
+                    cerr << "Empty catalog in file " << matchedB << " file!\n";
+                    throw (int)ROTCEN_ERROR_EMPTY_CAT;
+                }
                 obj_id[i_cat] = current_cat[0];
 
+                boost::filesystem::copy_file(matchedA,ROTCEN_MATCH_REF_CAT,boost::filesystem::copy_option::overwrite_if_exists);
             }
+
+            cout << endl << endl;
+            for (size_t k = 0; k < input_files.size(); ++k ) {
+                cout << obj_cat[3*k+1].at(obj_id[k].at(0)-1) << ", " << obj_cat[3*k+2].at(obj_id[k].at(0)-1) << ", ";
+            }
+            cout << endl << endl;
 
         } else { // use of astrometrical solution
 
         }
+
+        // compute rotation center
 
     } catch (int err) {
         input_list_file.close();

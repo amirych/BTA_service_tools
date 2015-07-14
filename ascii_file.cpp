@@ -30,7 +30,7 @@ AsciiFile::AsciiFileFlag AsciiFile::ReadLine(size_t N_elems, ...)
 {
     char s[MAX_STR_LEN];
     char *subs, *start, *end;
-    real_t val,*pval;
+    double val,*pval;
     size_t i;
 
 
@@ -57,7 +57,7 @@ AsciiFile::AsciiFileFlag AsciiFile::ReadLine(size_t N_elems, ...)
     for (i = 0; i < N_elems; ++i ) {
         val = strtod(start,&end);
         if ( end != start ) {
-            pval = va_arg(args,real_t*);
+            pval = va_arg(args,double*);
             *pval = val;
         } else break;
         start = end;
@@ -73,11 +73,11 @@ AsciiFile::AsciiFileFlag AsciiFile::ReadLine(size_t N_elems, ...)
 }
 
 
-AsciiFile::AsciiFileFlag AsciiFile::ReadLine(size_t N_elems, vector<real_t> &data)
+AsciiFile::AsciiFileFlag AsciiFile::ReadLine(size_t N_elems, vector<double> *data)
 {
     char s[MAX_STR_LEN];
     char *subs, *start, *end;
-    real_t val,*pval;
+    double val,*pval;
     size_t i;
 
 
@@ -95,12 +95,12 @@ AsciiFile::AsciiFileFlag AsciiFile::ReadLine(size_t N_elems, vector<real_t> &dat
 
     if ( subs[0] == CommentSymbol ) return AsciiFile::CommentString;
 
-    data.clear();
+    data->clear();
     start = subs;
     for (i = 0; i < N_elems; ++i ) {
         val = strtod(start,&end);
         if ( end != start ) {
-            data.push_back(val);
+            data->push_back(val);
         } else break;
         start = end;
     }
