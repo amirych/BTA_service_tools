@@ -39,6 +39,10 @@ static string ROTCEN_AST_EXE = "solve-field";
 static string ROTCEN_MATCH_EXE = "match";
 
 
+/*
+    The function construct a string by joining of elements of input vector of string.
+    The space character is inserted between the elements of vector.
+*/
 static string join_vector(vector<string> &vec)
 {
     string str;
@@ -46,7 +50,10 @@ static string join_vector(vector<string> &vec)
     return str;
 }
 
-
+/*
+    The function tries to execute external application given by 'cmd_str' string.
+    It checks exit code of the application.
+*/
 static int run_external(string &cmd_str)
 {
     int ret = system(cmd_str.c_str()); // try to run external command
@@ -123,37 +130,46 @@ static void rearrange_table(vector<vector<double> > &table, size_t last_col, vec
 int main(int argc, char* argv[])
 {
 
+    // some defaults
 
     vector<float> sex_thresh(1,5.0); // sextractor's THRESH default value
     vector<float> match_tol;        // default radius of coordinate matching. It is in arcsecs for astrometrical solution or
                                     // dimensionless value for 'match application' solution ('matchrad' parameter)
                                     // The actuall default value is set below according to '--use-match'
 
-    vector<string> sex_pars = {"-DETECT_TYPE CCD","-SATUR_LEVEL 40000","-CHECKIMAGE_TYPE NONE", "-FILTER N"};
+    vector<string> sex_pars = {"-DETECT_TYPE CCD -SATUR_LEVEL 40000 -CHECKIMAGE_TYPE NONE -FILTER N -GAIN 1.0"};
 
-    vector<string> solve_field_pars = {"--no-plots"};
+    vector<string> solve_field_pars = {"--no-plots -M none --no-fits2fits -O -R none -B none -W none -y -L 0.1 -H 0.7 -u arcsecperpix"};
 
     vector<string> match_pars = {"id1=0 id2=0 min_scale=0.9 max_scale=1.1 linear"}; // default 'match' commandline parameters
 
-    vector<string> sex_cat_prefix = {"obj_"};
+    vector<string> sex_cat_prefix = {"obj_"}; // SExtractor output catalog  filename prefix
 
-    vector<string> ast_prefix = {"wcs_"}; // astrometry-calibrated file prefix
+    vector<string> ast_prefix = {"wcs_"}; // astrometry-calibrated filename prefix
+
+    vector<float> ra_deg, dec_deg; // guess value for RA and DEC for astrometrical solution
+    vector<float> ast_radius = {0.5}; // search radius aroung guess RA and DEC for astrometry solution
+    vector<string> solve_field_config = {"/usr/local/astrometry/etc/astrometry.cfg"};
 
     string input_list_filename;
 
-    // commandline options and arguments
+    // commandline options and arguments definitions
 
     po::options_description visible_opts("Allowed options");
     visible_opts.add_options()
         ("help,h", "produce help message")
-        ("threshold,t", po::value<vector<float> >(&sex_thresh), "set threshold level for object detection (sextractor's THRESH keyword)")
+        ("threshold,t", po::value<vector<float> >(&sex_thresh), "set threshold level for object detection (sextractor's DETECT_THRESH keyword)")
         ("radius,r", po::value<vector<float> >(&match_tol), "radius of coordinate matching [arcsecs for astrometrical solution]")
         ("use-match,m","use of 'match' application instead of astrometry (explicitly set '-s' option)")
         ("use-sex,s","use of sextractor to detect objects (in case of astrometrical solution)")
         ("sex-pars",po::value<vector<string> >(), "sextractor's parameters")
-        ("solve-filed-pars",po::value<vector<string> >(), "'solve-field' parameters")
+        ("solve-field-pars",po::value<vector<string> >(), "'solve-field' parameters")
         ("match-pars",po::value<vector<string> >(), "'match' parameters")
-        ("dont-delete,d","do not delete temporary files");
+        ("dont-delete,d","do not delete temporary files")
+        ("solve-field-config,c",po::value<vector<string> >(), "filename with full path of 'solve-field' config")
+        ("--ra",po::value<vector<double> >(), "Guess RA for the field (in degrees)")
+        ("--dec",po::value<vector<double> >(), "Guess DEC for the field (in degrees)")
+        ("--search-radius",po::value<vector<double> >(), "search radius for astrometrical solution");
 
 
     po::options_description hidden_opts("");
@@ -223,7 +239,12 @@ int main(int argc, char* argv[])
 
     if ( vm.count("solve-field-pars") ) {
         solve_field_pars.erase(solve_field_pars.begin(),solve_field_pars.end());
-        solve_field_pars.push_back(vm["solve-filed-pars"].as<vector<string> >().back());
+        solve_field_pars.push_back(vm["solve-field-pars"].as<vector<string> >().back());
+    }
+
+    if ( vm.count("solve-field-config") ) {
+        solve_field_config.erase(solve_field_config.begin(),solve_field_config.end());
+        solve_field_config.push_back(vm["solve-field-config"].as<vector<string> >().back());
     }
 
     if ( vm.count("match-pars") ) {
@@ -255,9 +276,11 @@ int main(int argc, char* argv[])
             match_tol = {1.0};
         }
 
-        sex_pars.push_back("-GAIN 1.0");
-        sex_pars.push_back("-PARAMETERS_NAME " + ROTCEN_SEX_PARAM_FILE);
-        sex_pars.push_back("-CATALOG_TYPE ASCII");
+
+        sex_pars.back() += " -PARAMETERS_NAME " + ROTCEN_SEX_PARAM_FILE + " -CATALOG_TYPE ASCII" +
+                           " -DETECT_THRESH " + to_string(sex_thresh.back()) +
+                           " -ANALYSIS_THRESH " + to_string(sex_thresh.back());
+
 
         // create SExtractor's parameter file
         ofstream sex_param_file;
@@ -290,17 +313,24 @@ int main(int argc, char* argv[])
             cerr << "Application 'sex' is not available!\n";
             return ROTCEN_ERROR_UNAVAILABLE_CMD;
         }
+
         use_sex = true;
-        solve_field_pars.push_back("--use-sextractor");
+
+        solve_field_pars.back() += " --use-sextractor";
+        sex_pars.back() += " -DETECT_THRESH " + to_string(sex_thresh.back()) +
+                           " -ANALYSIS_THRESH " + to_string(sex_thresh.back());
+        solve_field_pars.back() += " --sextractor-path \"" + ROTCEN_SEX_EXE + " " + sex_pars.back() + "\" ";
 
         if ( !vm.count("radius") ) { // use default value
             match_tol = {0.5};
         }
+    } else {
+        solve_field_pars.back() += " --sigma " + to_string(sex_thresh.back());
     }
 
 
     list<string> input_files;
-    list<string> sex_cats;
+    list<string> sex_cats, ast_cat;
     string str;
 
     ifstream input_list_file;
@@ -331,18 +361,18 @@ int main(int argc, char* argv[])
 
         // run object detection and astrometry
 
-        string cmd_pars = join_vector(sex_pars);
-
         cout << "\nObjects detection:\n";
 
         for ( auto it_file = input_files.begin(); it_file != input_files.end(); ++it_file ) {
+            boost::filesystem::path pp = *it_file;
+            string path = pp.parent_path().string();
+            string file = boost::filesystem::basename(*it_file);
+
             if ( use_match ) { // skip astrometry, just detect objects using sextractor
-                boost::filesystem::path pp = *it_file;
-                string path = pp.parent_path().string();
-                string file = boost::filesystem::basename(*it_file);
 
                 file = path + boost::filesystem::path::preferred_separator + sex_cat_prefix.back() + file + ".cat";
-                string cmd_str = ROTCEN_SEX_EXE + " " + cmd_pars + " -CATALOG_NAME " +
+
+                string cmd_str = ROTCEN_SEX_EXE + " " + sex_pars.back() + " -CATALOG_NAME " +
                                  file + " " + *it_file + " >/dev/null 2>&1";
 
                 cout << "  Run SExtractor for " + *it_file + " ... ";
@@ -358,7 +388,13 @@ int main(int argc, char* argv[])
 
                 sex_cats.push_back(file);
             } else { // perform astrometry
+                file = path + boost::filesystem::path::preferred_separator + ast_prefix.back() + file + ".fits";
 
+                string cmd_str = ROTCEN_AST_EXE + " " + solve_field_pars.back() +
+                                 " --config " + solve_field_config.back() +  " -N " + file + " " + *it_file;
+                cout << cmd_str << endl;
+
+                ast_cat.push_back(file);
             }
         }
 
