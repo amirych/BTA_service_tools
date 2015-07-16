@@ -4,6 +4,7 @@
 //#include<cstdlib>
 #include<cstdio>
 #include<list>
+#include<regex>
 
 #define BOOST_NO_CXX11_SCOPED_ENUMS // special definition to fix Boost's copy_file and -std=c++11 linking error
 #include<boost/program_options.hpp>
@@ -129,6 +130,31 @@ static void rearrange_table(vector<vector<double> > &table, size_t last_col, vec
 }
 
 
+/*
+    The function convert string sexagesimal presentation of the celestial coordinates
+    to degrees value. The sexagesimal presentation is "[+/-]dd:mm:ss[.sss]" for DEC and
+    "hh::mm:ss[.sss]" for RA with possible space characters before and after the string.
+
+    The function does not check validness of the input string!
+*/
+static float sex2deg(string str, bool hours = false)
+{
+    string s = str;
+    float val = 0.0;
+    float p = 1.0;
+    size_t idx;
+
+    for ( int i = 0; i < 3; ++i, p *= 60.0 ) {
+        val += stof(s,&idx)/p;
+        s = s.substr(idx);
+    }
+
+    if ( hours ) val *= 15.0;
+
+    return val;
+}
+
+
 int main(int argc, char* argv[])
 {
 
@@ -174,9 +200,10 @@ int main(int argc, char* argv[])
         ("solve-field-config,c",po::value<vector<string> >(), "filename with full path of 'solve-field' config")
         ("ra",po::value<vector<double> >(), "Guess RA for the field (in degrees)")
         ("dec",po::value<vector<double> >(), "Guess DEC for the field (in degrees)")
-        ("ra-key",po::value<vector<string> >(), "FITS-keyword name with RA value")
-        ("dec-key",po::value<vector<string> >(), "FITS-keyword name with DEC value")
-        ("ra-in-hours","RA FITS-keyword is given in hours")
+        ("ra-key",po::value<vector<string> >(), "FITS-keyword name with RA guess value")
+        ("dec-key",po::value<vector<string> >(), "FITS-keyword name with DEC guess value")
+        ("ra-in-hours","RA value in FITS-keyword is given in hours")
+        ("ra-dec-str","RA and DEC values in FITS-keywords are given in form of sexagesimal string (RA: hh:mm:ss.ss, DEC: dd:mm:ss.ss)")
         ("search-radius",po::value<vector<double> >(), "search radius for astrometrical solution (in degrees)");
 
 
@@ -202,6 +229,7 @@ int main(int argc, char* argv[])
                                 "[--use-match] [--match-pars str] \n" << skip_str <<
                                 "[--use-sex] [--sex-pars str]\n" << skip_str <<
                                 "[--ra num] [--deg num] [--search-radius num]\n" << skip_str <<
+                                "[--ra-key str] [--dec-key str] [--ra-in-hours] [--ra-dec-str]\n" << skip_str <<
                                 "[--solve-field-pars str] [--solve-field-config str] input_list\n\n";
 
             cout << visible_opts << "\n";
@@ -430,7 +458,7 @@ int main(int argc, char* argv[])
                 file = path + boost::filesystem::path::preferred_separator + ast_prefix.back() + file + ".fits";
 
                 string cmd_str = ROTCEN_AST_EXE + " " + solve_field_pars.back() +
-                                 " -R " + file + " " + *it_file;
+                                 " -R " + file;
 
                 if ( !use_guess_radec ) { // no user's guess RA and DEC in commandline
                     int fits_status;      // try to read RA and DEC from FITS header
@@ -445,14 +473,63 @@ int main(int argc, char* argv[])
                     }
 
                     fits_read_keyword(file,ra_keyword.back().c_str(),key_value,NULL,&fits_status);
+                    if ( fits_status == KEY_NO_EXIST ) goto jmp; // No RA keyword. Just skip
                     if ( fits_status ) {
                         cerr << "Something wrong while reading '" << ra_keyword.back() << "' keyword in " << *it_file << " file!\n";
                         throw ROTCEN_ERROR_CFITSIO + fits_status;
                     }
+                    if ( vm.count("ra-dec-str") ) { // RA should be in sexagesimal form
+                        if (!regex_match(key_value,regex("^ *\\+?\\d\\d:\\d\\d:\\d\\d(\\.{1}\\d*)? *$")) ) { // is it in sexagesimal?
+                            cerr << "Invalid RA value in " << ra_keyword.back() << " FITS-keyword of " << *it_file << " file!\n";
+                            fits_close_file(file,&fits_status);
+                            throw (int)ROTCEN_ERROR_BAD_DATA;
+                        }
+                        // convert to degrees
+                        ra_deg.back() = sex2deg(key_value,true);
+                    } else { // RA should be non-negative numeric values
+                        if (!regex_match(key_value,regex("^ *\\+?\\d+(\\.{1}\\d*)?([EeDd][+-]?\\d+)? *$")) ) { // is it a number?
+                            cerr << "Invalid RA value in " << ra_keyword.back() << " FITS-keyword of " << *it_file << " file!\n";
+                            fits_close_file(file,&fits_status);
+                            throw (int)ROTCEN_ERROR_BAD_DATA;
+                        }
 
+                        ra_deg.back() = stof(key_value);
+
+                        if ( vm.count("ra-in-hours") ) {
+                            ra_deg.back() *= 15.0;
+                        }
+                    }
+
+                    fits_read_keyword(file,dec_keyword.back().c_str(),key_value,NULL,&fits_status);
+                    if ( fits_status == KEY_NO_EXIST ) goto jmp; // No DEC keyword. just skip
+                    if ( fits_status ) {
+                        cerr << "Something wrong while reading '" << ra_keyword.back() << "' keyword in " << *it_file << " file!\n";
+                        throw ROTCEN_ERROR_CFITSIO + fits_status;
+                    }
+                    if ( vm.count("ra-dec-str") ) { // DEC should be in sexagesimal form
+                        if (!regex_match(key_value,regex("^ *[+-]?\\d\\d:\\d\\d:\\d\\d(\\.{1}\\d*)? *$")) ) { // is it in sexagesimal?
+                            cerr << "Invalid DEC value in " << dec_keyword.back() << " FITS-keyword of " << *it_file << " file!\n";
+                            fits_close_file(file,&fits_status);
+                            throw (int)ROTCEN_ERROR_BAD_DATA;
+                        }
+                        // convert to degrees
+                        dec_deg.back() = sex2deg(key_value);
+                    } else { // DEC should be non-negative numeric values
+                        if (!regex_match(key_value,regex("^ *[+-]?\\d+(\\.{1}\\d*)?([EeDd][+-]?\\d+)? *$")) ) { // is it a number?
+                            cerr << "Invalid DEC value in " << dec_keyword.back() << " FITS-keyword of " << *it_file << " file!\n";
+                            fits_close_file(file,&fits_status);
+                            throw (int)ROTCEN_ERROR_BAD_DATA;
+                        }
+                        dec_deg.back() = stof(key_value);
+                    }
+
+                    cmd_str += " --ra " + to_string(ra_deg.back()) + " --dec " + to_string(dec_deg.back());
 
                     fits_close_file(file,&fits_status);
                 }
+                jmp:
+
+                cmd_str +=  " " + *it_file;
 
                 cout << cmd_str << endl;
 
