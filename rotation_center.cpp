@@ -9,6 +9,7 @@
 #include<boost/program_options.hpp>
 #include<boost/filesystem.hpp>
 
+#include<fitsio.h>
 
 #include"ascii_file.h"
 
@@ -30,6 +31,7 @@ namespace po = boost::program_options;
 #define ROTCEN_ERROR_BAD_DATA 100
 #define ROTCEN_ERROR_EMPTY_CAT 110
 
+#define ROTCEN_ERROR_CFITSIO 1000 // displacement for CFITSIO error code
 
 static string ROTCEN_SEX_PARAM_FILE = "sex.param";
 static string ROTCEN_MATCH_REF_CAT = "ref.cat";
@@ -139,7 +141,7 @@ int main(int argc, char* argv[])
 
     vector<string> sex_pars = {"-DETECT_TYPE CCD -SATUR_LEVEL 40000 -CHECKIMAGE_TYPE NONE -FILTER N -GAIN 1.0"};
 
-    vector<string> solve_field_pars = {"--no-plots -M none --no-fits2fits -O -R none -B none -W none -y -L 0.1 -H 0.7 -u arcsecperpix"};
+    vector<string> solve_field_pars = {"--no-plots -M none --no-fits2fits -O -B none -W none -y -L 0.1 -H 0.7 -u arcsecperpix"};
 
     vector<string> match_pars = {"id1=0 id2=0 min_scale=0.9 max_scale=1.1 linear"}; // default 'match' commandline parameters
 
@@ -150,6 +152,9 @@ int main(int argc, char* argv[])
     vector<float> ra_deg, dec_deg; // guess value for RA and DEC for astrometrical solution
     vector<float> ast_radius = {0.5}; // search radius aroung guess RA and DEC for astrometry solution
     vector<string> solve_field_config = {"/usr/local/astrometry/etc/astrometry.cfg"};
+
+    vector<string> ra_keyword = {"RA"};
+    vector<string> dec_keyword = {"DEC"};
 
     string input_list_filename;
 
@@ -167,9 +172,12 @@ int main(int argc, char* argv[])
         ("match-pars",po::value<vector<string> >(), "'match' parameters")
         ("dont-delete,d","do not delete temporary files")
         ("solve-field-config,c",po::value<vector<string> >(), "filename with full path of 'solve-field' config")
-        ("--ra",po::value<vector<double> >(), "Guess RA for the field (in degrees)")
-        ("--dec",po::value<vector<double> >(), "Guess DEC for the field (in degrees)")
-        ("--search-radius",po::value<vector<double> >(), "search radius for astrometrical solution");
+        ("ra",po::value<vector<double> >(), "Guess RA for the field (in degrees)")
+        ("dec",po::value<vector<double> >(), "Guess DEC for the field (in degrees)")
+        ("ra-key",po::value<vector<string> >(), "FITS-keyword name with RA value")
+        ("dec-key",po::value<vector<string> >(), "FITS-keyword name with DEC value")
+        ("ra-in-hours","RA FITS-keyword is given in hours")
+        ("search-radius",po::value<vector<double> >(), "search radius for astrometrical solution (in degrees)");
 
 
     po::options_description hidden_opts("");
@@ -191,8 +199,10 @@ int main(int argc, char* argv[])
             string skip_str(head_str.length()+1,' ');
 
             cout << head_str << " [-h] [-t num] [-r num] [-d] [--solve-field-pars]\n" << skip_str <<
-                                "[--use-match] [--match-pars] \n" << skip_str <<
-                                "[--use-sex] [--sex-pars] input_list\n\n";
+                                "[--use-match] [--match-pars str] \n" << skip_str <<
+                                "[--use-sex] [--sex-pars str]\n" << skip_str <<
+                                "[--ra num] [--deg num] [--search-radius num]\n" << skip_str <<
+                                "[--solve-field-pars str] [--solve-field-config str] input_list\n\n";
 
             cout << visible_opts << "\n";
             return ROTCEN_ERROR_HELP;
@@ -261,6 +271,7 @@ int main(int argc, char* argv[])
 
     bool use_match = false;
     bool use_sex = false;
+    bool use_guess_radec = false;
 
     if ( vm.count("use-match") ) {
         int ret = system("match --help  >/dev/null 2>&1"); // try to run command 'match'
@@ -303,6 +314,34 @@ int main(int argc, char* argv[])
         if ( ret == -1 || exit_code == 127 ) {
             cerr << "Application 'solve-field' is not available!\n";
             return ROTCEN_ERROR_UNAVAILABLE_CMD;
+        }
+
+        if ( vm.count("solve-field-config") ) {
+            solve_field_config.back() = vm["solve-field-config"].as<vector<float> >().back();
+        }
+
+        solve_field_pars.back() += " --config " + solve_field_config.back();
+
+        if ( vm.count("ra") && vm.count("dec") ) { // it makes sense only if the both are given
+            use_guess_radec = true;
+
+            ra_deg = vm["ra"].as<vector<float> >();
+            dec_deg = vm["dec"].as<vector<float> >();
+
+            solve_field_pars.back() += " --ra " + to_string(ra_deg.back()) + " --dec " + to_string(dec_deg.back());
+        }
+
+        if ( vm.count("search-radius") ) {
+            ast_radius = vm["search-radius"].as<vector<float> >();
+            solve_field_pars.back() += " --radius " + to_string(ast_radius.back());
+        }
+
+        if ( vm.count("ra-key") ) {
+            ra_keyword = vm["ra-key"].as<vector<string> >();
+        }
+
+        if ( vm.count("dec-key") ) {
+            dec_keyword = vm["dec-key"].as<vector<string> >();
         }
     }
 
@@ -391,7 +430,30 @@ int main(int argc, char* argv[])
                 file = path + boost::filesystem::path::preferred_separator + ast_prefix.back() + file + ".fits";
 
                 string cmd_str = ROTCEN_AST_EXE + " " + solve_field_pars.back() +
-                                 " --config " + solve_field_config.back() +  " -N " + file + " " + *it_file;
+                                 " -R " + file + " " + *it_file;
+
+                if ( !use_guess_radec ) { // no user's guess RA and DEC in commandline
+                    int fits_status;      // try to read RA and DEC from FITS header
+                    fitsfile* file;
+
+                    char key_value[81];
+
+                    fits_open_image(&file,(*it_file).c_str(),READONLY,&fits_status);
+                    if ( fits_status ) {
+                        cerr << "Something wrong while opening " << *it_file << " file!\n";
+                        throw ROTCEN_ERROR_CFITSIO + fits_status;
+                    }
+
+                    fits_read_keyword(file,ra_keyword.back().c_str(),key_value,NULL,&fits_status);
+                    if ( fits_status ) {
+                        cerr << "Something wrong while reading '" << ra_keyword.back() << "' keyword in " << *it_file << " file!\n";
+                        throw ROTCEN_ERROR_CFITSIO + fits_status;
+                    }
+
+
+                    fits_close_file(file,&fits_status);
+                }
+
                 cout << cmd_str << endl;
 
                 ast_cat.push_back(file);
