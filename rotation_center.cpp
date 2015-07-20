@@ -31,6 +31,7 @@ namespace po = boost::program_options;
 #define ROTCEN_ERROR_CANNOT_CREATE_FILE 90
 #define ROTCEN_ERROR_BAD_DATA 100
 #define ROTCEN_ERROR_EMPTY_CAT 110
+#define ROTCEN_ERROR_BAD_ALLOC 120
 
 #define ROTCEN_ERROR_CFITSIO 1000 // displacement for CFITSIO error code
 
@@ -104,7 +105,85 @@ static int read_catalog(string &filename, size_t N_items, vector<vector<double> 
 
 
 /*
-    The function rearrange table of object IDs according to new vector of IDs for the first column.
+    The routine reads data from FITS binary table. It assumes the binary table format
+    is according to RDLS-files of 'solve-field' application
+*/
+static int read_fits_catalog(string &filename, vector<vector<double> > &data)
+{
+    int fits_status = 0;
+    fitsfile *file;
+    int ret_code = ROTCEN_ERROR_OK;
+    long opt_nrows,nrows;
+    double *ra = nullptr;
+    double *dec = nullptr;
+
+    try {
+        fits_open_table(&file,filename.c_str(),READONLY,&fits_status);
+        if ( fits_status ) throw fits_status;
+
+        fits_get_num_rows(file, &nrows, &fits_status);
+        if ( fits_status ) throw fits_status;
+
+        fits_get_rowsize(file,&opt_nrows,&fits_status);
+        if ( fits_status ) throw fits_status;
+
+        if ( opt_nrows > nrows ) opt_nrows = nrows;
+
+        ra = new double[opt_nrows];
+        dec = new double[opt_nrows];
+
+        data = vector<vector<double> >(3);
+
+        long n_chunk = nrows/opt_nrows;
+        long N_rest = nrows - n_chunk*opt_nrows;
+
+        int zz;
+        fits_get_colnum(file,CASEINSEN,"RA",&zz,&fits_status);
+
+        for ( long i = 0; i < n_chunk; ++i ) {
+            fits_read_col(file,TDOUBLE,1,i*opt_nrows+1,1,opt_nrows,NULL,(void*)ra,NULL,&fits_status);
+            if ( fits_status ) throw fits_status;
+
+            fits_read_col(file,TDOUBLE,2,i*opt_nrows+1,1,opt_nrows,NULL,(void*)dec,NULL,&fits_status);
+            if ( fits_status ) throw fits_status;
+
+            auto it = data[1].end();
+            data[1].insert(it,ra,ra+opt_nrows);
+
+            it = data[2].end();
+            data[2].insert(it,dec,dec+opt_nrows);
+        }
+        if ( N_rest ) {
+            fits_read_col(file,TDOUBLE,1,n_chunk*opt_nrows+1,1,N_rest,NULL,(void*)ra,NULL,&fits_status);
+            if ( fits_status ) throw fits_status;
+
+            fits_read_col(file,TDOUBLE,2,n_chunk*opt_nrows+1,1,N_rest,NULL,(void*)dec,NULL,&fits_status);
+            if ( fits_status ) throw fits_status;
+
+            auto it = data[0].end();
+            data[0].insert(it,ra,ra+N_rest);
+
+            it = data[1].end();
+            data[1].insert(it,dec,dec+N_rest);
+        }
+        // generate IDs column (just from 1 to size(RAcol))
+        for ( double i = 1; i <= data[1].size(); ++i ) data[0].push_back(i);
+    } catch (int err) {
+        ret_code =  err + ROTCEN_ERROR_CFITSIO;
+    } catch (bad_alloc &ex) {
+        ret_code = ROTCEN_ERROR_BAD_ALLOC;
+    }
+
+    delete[] ra;
+    delete[] dec;
+
+    fits_close_file(file,&fits_status);
+
+    return ret_code;
+}
+
+/*
+    The function rearranges table of object IDs according to new vector of IDs for the first column.
     The table rows will be permutted according to new order of ID numbers in the new_id vector.
     NOTE: the algorithm assumes:
                1) new_id contains of unique numbers
@@ -167,15 +246,18 @@ int main(int argc, char* argv[])
 
     vector<string> sex_pars = {"-DETECT_TYPE CCD -SATUR_LEVEL 40000 -CHECKIMAGE_TYPE NONE -FILTER N -GAIN 1.0"};
 
-    vector<string> solve_field_pars = {"--no-plots -M none --no-fits2fits -O -B none -W none -y -L 0.1 -H 0.7 -u arcsecperpix"};
+    vector<string> solve_field_pars = {"--no-plots -M none --no-fits2fits -O -B none -W none -U none -y -L 0.1 -H 0.7 -u arcsecperpix"};
 
     vector<string> match_pars = {"id1=0 id2=0 min_scale=0.9 max_scale=1.1 linear"}; // default 'match' commandline parameters
 
     vector<string> sex_cat_prefix = {"obj_"}; // SExtractor output catalog  filename prefix
 
-    vector<string> ast_prefix = {"wcs_"}; // astrometry-calibrated filename prefix
+    vector<string> ast_prefix = {"rdls_"}; // astrometry-calibrated filename prefix
 
     vector<float> ra_deg, dec_deg; // guess value for RA and DEC for astrometrical solution
+    ra_deg.push_back(0.0);
+    dec_deg.push_back(0.0);
+
     vector<float> ast_radius = {0.5}; // search radius aroung guess RA and DEC for astrometry solution
     vector<string> solve_field_config = {"/usr/local/astrometry/etc/astrometry.cfg"};
 
@@ -204,7 +286,7 @@ int main(int argc, char* argv[])
         ("dec-key",po::value<vector<string> >(), "FITS-keyword name with DEC guess value")
         ("ra-in-hours","RA value in FITS-keyword is given in hours")
         ("ra-dec-str","RA and DEC values in FITS-keywords are given in form of sexagesimal string (RA: hh:mm:ss.ss, DEC: dd:mm:ss.ss)")
-        ("search-radius",po::value<vector<double> >(), "search radius for astrometrical solution (in degrees)");
+        ("search-radius",po::value<vector<float> >(), "search radius for astrometrical solution (in degrees)");
 
 
     po::options_description hidden_opts("");
@@ -361,8 +443,10 @@ int main(int argc, char* argv[])
 
         if ( vm.count("search-radius") ) {
             ast_radius = vm["search-radius"].as<vector<float> >();
-            solve_field_pars.back() += " --radius " + to_string(ast_radius.back());
+//            solve_field_pars.back() += " --radius " + to_string(ast_radius.back());
         }
+
+        solve_field_pars.back() += " --radius " + to_string(ast_radius.back());
 
         if ( vm.count("ra-key") ) {
             ra_keyword = vm["ra-key"].as<vector<string> >();
@@ -370,6 +454,10 @@ int main(int argc, char* argv[])
 
         if ( vm.count("dec-key") ) {
             dec_keyword = vm["dec-key"].as<vector<string> >();
+        }
+
+        if ( !vm.count("radius") ) { // use default value
+            match_tol = {0.3};
         }
     }
 
@@ -460,8 +548,12 @@ int main(int argc, char* argv[])
                 string cmd_str = ROTCEN_AST_EXE + " " + solve_field_pars.back() +
                                  " -R " + file;
 
+                string solved_file = file + ".solved";
+
+                cmd_str += " -S " + solved_file + " -N none";
+
                 if ( !use_guess_radec ) { // no user's guess RA and DEC in commandline
-                    int fits_status;      // try to read RA and DEC from FITS header
+                    int fits_status = 0;      // try to read RA and DEC from FITS header
                     fitsfile* file;
 
                     char key_value[81];
@@ -531,7 +623,18 @@ int main(int argc, char* argv[])
 
                 cmd_str +=  " " + *it_file;
 
-                cout << cmd_str << endl;
+//                cout << cmd_str << endl;
+
+//                int ret = run_external(cmd_str); // try to run command 'solve-field'
+//                bool ok = boost::filesystem::exists(solved_file);
+//                if ( ret || !ok ) {
+//                    cerr << "ret=" << ret << endl;
+//                    cout << "Failed!\n";
+//                    cerr << "Something wrong while run application 'solve-field'!\n";
+//                    throw (int)ROTCEN_ERROR_APP_FAILED;
+//                }
+
+                cout << "OK!\n";
 
                 ast_cat.push_back(file);
             }
@@ -639,7 +742,86 @@ int main(int argc, char* argv[])
             cout << endl << endl;
 
         } else { // use of astrometrical solution
+            cout << "\nMatching objects using astrometrical solution:\n";
 
+            auto it_file = ast_cat.begin();
+            ++it_file; // point to the second catalog
+
+            // read the first catalog
+            int ret = read_fits_catalog(ast_cat.front(),current_cat);
+            if ( ret != ROTCEN_ERROR_OK ) {
+                cerr << "Something is wrong while reading " << ast_cat.front() << " file!\n";
+                throw ret;
+            }
+            obj_cat[0] = current_cat[0]; // ID
+            obj_cat[1] = current_cat[1]; // RA values
+            obj_cat[2] = current_cat[2]; // DEC values
+
+            obj_id[0] = current_cat[0];
+
+            double min_dist = match_tol.back()*match_tol.back()+1.0;
+            double dist;
+
+//            vector<double> dist(current_cat[0].size());
+
+            for ( long i_cat = 1; it_file != ast_cat.end(); ++it_file, ++i_cat ) {
+                // read current catalog
+                ret = read_fits_catalog(*it_file,current_cat);
+                if ( ret != ROTCEN_ERROR_OK ) {
+                    cerr << "Something is wrong while reading " << *it_file << " file!\n";
+                    throw ret;
+                }
+
+                long cat_col = 3*i_cat;
+
+                obj_cat[cat_col] = current_cat[0]; // ID
+                obj_cat[cat_col+1] = current_cat[1]; // RA
+                obj_cat[cat_col+2] = current_cat[2]; // DEC
+
+                // matching
+
+                long N_matched = 0;
+                for ( long idx = 0; idx < obj_id[0].size(); ++idx ) {
+                    double min_d = min_dist;
+                    long min_ind = 0;
+                    for ( long j = 0; j < obj_cat[cat_col].size(); ++j ) {
+                        // compute distance ("-1" in the index computation since ID starts from 1!)
+                        double rd = obj_cat[1].at(obj_id[0].at(idx)-1) - obj_cat[cat_col+1].at(j);
+                        double dd = obj_cat[2].at(obj_id[0].at(idx)-1) - obj_cat[cat_col+2].at(j);
+
+                        dist = rd*rd + dd*dd;
+
+                        if ( dist < min_d ) { // store ID of matched objects
+                            current_cat[0].at(N_matched) = obj_id[0].at(idx);
+//                            obj_id[i_cat].at(N_matched) = obj_cat[cat_col].at(j);
+                            min_ind = obj_cat[cat_col].at(j);
+                            min_d = dist;     // search for the closest objects
+                        }
+                    }
+                    if ( min_ind ) {
+                        obj_id[i_cat].push_back(min_ind);
+                        ++N_matched;
+                    }
+                }
+
+                if ( !N_matched ) {
+                    cerr << "No matching objects in the input catalogs!\n";
+                    throw (int)ROTCEN_ERROR_EMPTY_CAT;
+                }
+
+                cout << "    Matched " << current_cat[0].size() << " objects\n";
+                current_cat[0].resize(N_matched);
+
+                if ( i_cat > 1 ) {
+                    rearrange_table(obj_id,i_cat-1,current_cat[0]);
+                }
+            }
+
+            cout << endl << endl;
+            for (size_t k = 0; k < input_files.size(); ++k ) {
+                cout << obj_cat[3*k+1].at(obj_id[k].at(0)-1) << ", " << obj_cat[3*k+2].at(obj_id[k].at(0)-1) << ", ";
+            }
+            cout << endl << endl;
         }
 
         // compute rotation center
