@@ -32,6 +32,7 @@ namespace po = boost::program_options;
 #define ROTCEN_ERROR_BAD_DATA 100
 #define ROTCEN_ERROR_EMPTY_CAT 110
 #define ROTCEN_ERROR_BAD_ALLOC 120
+#define ROTCEN_ERROR_BAD_MATCH 130
 
 #define ROTCEN_ERROR_CFITSIO 1000 // displacement for CFITSIO error code
 
@@ -137,8 +138,6 @@ static int read_fits_catalog(string &filename, vector<vector<double> > &data)
         long n_chunk = nrows/opt_nrows;
         long N_rest = nrows - n_chunk*opt_nrows;
 
-        int zz;
-        fits_get_colnum(file,CASEINSEN,"RA",&zz,&fits_status);
 
         for ( long i = 0; i < n_chunk; ++i ) {
             fits_read_col(file,TDOUBLE,1,i*opt_nrows+1,1,opt_nrows,NULL,(void*)ra,NULL,&fits_status);
@@ -244,15 +243,16 @@ int main(int argc, char* argv[])
                                     // dimensionless value for 'match application' solution ('matchrad' parameter)
                                     // The actuall default value is set below according to '--use-match'
 
-    vector<string> sex_pars = {"-DETECT_TYPE CCD -SATUR_LEVEL 40000 -CHECKIMAGE_TYPE NONE -FILTER N -GAIN 1.0"};
+    vector<string> sex_pars = {"-DETECT_TYPE CCD -SATUR_LEVEL 40000 -CHECKIMAGE_TYPE NONE -FILTER N -GAIN 1.0 -VERBOSE_TYPE QUIET"};
 
-    vector<string> solve_field_pars = {"--no-plots -M none --no-fits2fits -O -B none -W none -U none -y -L 0.1 -H 0.7 -u arcsecperpix"};
+//    vector<string> solve_field_pars = {"--no-plots -M none --no-fits2fits -O -B none -W none -U none -y -L 0.1 -H 0.7 -u arcsecperpix"};
+    vector<string> solve_field_pars = {"--no-plots -M none --no-fits2fits -O -B none -W none -y -L 0.1 -H 0.7 -u arcsecperpix"};
 
     vector<string> match_pars = {"id1=0 id2=0 min_scale=0.9 max_scale=1.1 linear"}; // default 'match' commandline parameters
 
     vector<string> sex_cat_prefix = {"obj_"}; // SExtractor output catalog  filename prefix
 
-    vector<string> ast_prefix = {"rdls_"}; // astrometry-calibrated filename prefix
+    vector<string> ast_prefix = {"wcs_"}; // astrometry-calibrated filename prefix
 
     vector<float> ra_deg, dec_deg; // guess value for RA and DEC for astrometrical solution
     ra_deg.push_back(0.0);
@@ -286,7 +286,8 @@ int main(int argc, char* argv[])
         ("dec-key",po::value<vector<string> >(), "FITS-keyword name with DEC guess value")
         ("ra-in-hours","RA value in FITS-keyword is given in hours")
         ("ra-dec-str","RA and DEC values in FITS-keywords are given in form of sexagesimal string (RA: hh:mm:ss.ss, DEC: dd:mm:ss.ss)")
-        ("search-radius",po::value<vector<float> >(), "search radius for astrometrical solution (in degrees)");
+        ("search-radius",po::value<vector<float> >(), "search radius for astrometrical solution (in degrees)")
+        ("save-wcs", "Save WCS-calibrated FITS-files (assuming 'solve-field' type of matching)");
 
 
     po::options_description hidden_opts("");
@@ -382,6 +383,7 @@ int main(int argc, char* argv[])
     bool use_match = false;
     bool use_sex = false;
     bool use_guess_radec = false;
+    bool save_wcs = false;
 
     if ( vm.count("use-match") ) {
         int ret = system("match --help  >/dev/null 2>&1"); // try to run command 'match'
@@ -458,6 +460,10 @@ int main(int argc, char* argv[])
 
         if ( !vm.count("radius") ) { // use default value
             match_tol = {0.3};
+        }
+
+        if ( vm.count("save-wcs") ) {
+            save_wcs = true;
         }
     }
 
@@ -543,14 +549,23 @@ int main(int argc, char* argv[])
 
                 sex_cats.push_back(file);
             } else { // perform astrometry
-                file = path + boost::filesystem::path::preferred_separator + ast_prefix.back() + file + ".fits";
+//                file = path + boost::filesystem::path::preferred_separator + ast_prefix.back() + file + ".fits";
 
-                string cmd_str = ROTCEN_AST_EXE + " " + solve_field_pars.back() +
-                                 " -R " + file;
+//                string cmd_str = ROTCEN_AST_EXE + " " + solve_field_pars.back() +
+//                                 " -R " + file;
 
-                string solved_file = file + ".solved";
+                string solved_file = path + boost::filesystem::path::preferred_separator + file + ".solved";
+                string rdls_file = path + boost::filesystem::path::preferred_separator + file + ".rdls";
 
-                cmd_str += " -S " + solved_file + " -N none";
+//                cmd_str += " -S " + solved_file + " -N none";
+
+                string cmd_str = ROTCEN_AST_EXE + " " + solve_field_pars.back();
+
+                if ( save_wcs ) { // save WCS-calibrated FITS-file
+                    cmd_str += " -N " + path + boost::filesystem::path::preferred_separator + ast_prefix.back() + file + ".fits";
+                } else {
+                    cmd_str += " -N none";
+                }
 
                 if ( !use_guess_radec ) { // no user's guess RA and DEC in commandline
                     int fits_status = 0;      // try to read RA and DEC from FITS header
@@ -621,7 +636,9 @@ int main(int argc, char* argv[])
                 }
                 jmp:
 
-                cmd_str +=  " " + *it_file;
+                cmd_str +=  " " + *it_file + "  >/dev/null 2>&1";
+
+                cout << "  Run solve-field for " + *it_file + " ... ";
 
 //                cout << cmd_str << endl;
 
@@ -636,7 +653,8 @@ int main(int argc, char* argv[])
 
                 cout << "OK!\n";
 
-                ast_cat.push_back(file);
+//                ast_cat.push_back(file);
+                ast_cat.push_back(rdls_file);
             }
         }
 
@@ -759,7 +777,7 @@ int main(int argc, char* argv[])
 
             obj_id[0] = current_cat[0];
 
-            double min_dist = match_tol.back()*match_tol.back()+1.0;
+            double min_dist = match_tol.back()*match_tol.back()/3600.0; // in degrees
             double dist;
 
 //            vector<double> dist(current_cat[0].size());
@@ -780,6 +798,7 @@ int main(int argc, char* argv[])
 
                 // matching
 
+                cout << "  0 <--> " << i_cat << ", ";
                 long N_matched = 0;
                 for ( long idx = 0; idx < obj_id[0].size(); ++idx ) {
                     double min_d = min_dist;
@@ -791,15 +810,22 @@ int main(int argc, char* argv[])
 
                         dist = rd*rd + dd*dd;
 
-                        if ( dist < min_d ) { // store ID of matched objects
+//                        if ( dist < min_d ) { // store ID of matched objects
+                        if ( dist == 0 ) { // store ID of matched objects
+                            if ( N_matched == current_cat[0].size() ) {
+                                cerr << "Something wrong while matching objects!\n";
+                                cerr << "It seems there was to big matching radius!\n";
+                                throw ROTCEN_ERROR_BAD_MATCH;
+                            }
                             current_cat[0].at(N_matched) = obj_id[0].at(idx);
-//                            obj_id[i_cat].at(N_matched) = obj_cat[cat_col].at(j);
                             min_ind = obj_cat[cat_col].at(j);
                             min_d = dist;     // search for the closest objects
+                            break;
                         }
                     }
                     if ( min_ind ) {
                         obj_id[i_cat].push_back(min_ind);
+//                        cout << "idx = " << idx << ", min_ind = " << min_ind << endl;
                         ++N_matched;
                     }
                 }
@@ -809,19 +835,49 @@ int main(int argc, char* argv[])
                     throw (int)ROTCEN_ERROR_EMPTY_CAT;
                 }
 
-                cout << "    Matched " << current_cat[0].size() << " objects\n";
-                current_cat[0].resize(N_matched);
+                cout << N_matched << " objects were matched\n";
+                if ( N_matched != current_cat[0].size() ) current_cat[0].resize(N_matched);
 
                 if ( i_cat > 1 ) {
                     rearrange_table(obj_id,i_cat-1,current_cat[0]);
                 }
             }
 
-            cout << endl << endl;
-            for (size_t k = 0; k < input_files.size(); ++k ) {
-                cout << obj_cat[3*k+1].at(obj_id[k].at(0)-1) << ", " << obj_cat[3*k+2].at(obj_id[k].at(0)-1) << ", ";
+            // read catalogs with pixel coordinates
+            size_t i_cat = 0;
+            for ( it_file = ast_cat.begin(); it_file != ast_cat.end(); ++it_file, ++i_cat ) {
+                boost::filesystem::path pp = *it_file;
+                string path = pp.parent_path().string();
+                string file = boost::filesystem::basename(*it_file);
+
+                file = path + boost::filesystem::path::preferred_separator + file + "-indx.xyls";
+
+                int ret = read_fits_catalog(file,current_cat);
+                if ( ret != ROTCEN_ERROR_OK ) {
+                    cerr << "Something is wrong while reading " << file << " file!\n";
+                    throw ret;
+                }
+
+                obj_cat[i_cat*3] = current_cat[0]; // ID
+                obj_cat[i_cat*3+1] = current_cat[1]; // X values
+                obj_cat[i_cat*3+2] = current_cat[2]; // Y values
             }
-            cout << endl << endl;
+
+
+//            cout << endl << endl;
+//            for ( size_t j = 0; j < obj_id[0].size(); ++j ) {
+//                for (size_t k = 0; k < input_files.size(); ++k ) {
+////                    cout << obj_cat[3*k+1].at(obj_id[k].at(0)-1) << ", " << obj_cat[3*k+2].at(obj_id[k].at(0)-1) << ", ";
+//                    cout << obj_id[k].at(j) << " ";
+//                }
+//                cout << endl;
+//            }
+//            cout << endl << endl;
+
+//            for (size_t k = 0; k < input_files.size(); ++k ) {
+//                cout << obj_cat[3*k+1].at(obj_id[k].at(0)-1) << ", " << obj_cat[3*k+2].at(obj_id[k].at(0)-1) << ", ";
+//            }
+//            cout << endl << endl;
         }
 
         // compute rotation center
