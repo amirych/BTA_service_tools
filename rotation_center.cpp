@@ -1,10 +1,12 @@
 #include<iostream>
 #include<fstream>
+#include <iomanip>
 //#include<libgen.h>
 //#include<cstdlib>
 #include<cstdio>
 #include<list>
 #include<regex>
+#include<ctime>
 
 #define BOOST_NO_CXX11_SCOPED_ENUMS // special definition to fix Boost's copy_file and -std=c++11 linking error
 #include<boost/program_options.hpp>
@@ -35,6 +37,7 @@ namespace po = boost::program_options;
 #define ROTCEN_ERROR_BAD_ALLOC 120
 #define ROTCEN_ERROR_BAD_MATCH 130
 #define ROTCEN_ERROR_CANNOT_SOLVE 140
+#define ROTCEN_ERROR_CANNOT_CREATE_RESULT_FILE 150
 
 #define ROTCEN_ERROR_CFITSIO 1000 // displacement for CFITSIO error code
 
@@ -46,16 +49,6 @@ static string ROTCEN_AST_EXE = "solve-field";
 static string ROTCEN_MATCH_EXE = "match";
 
 
-/*
-    The function construct a string by joining of elements of input vector of string.
-    The space character is inserted between the elements of vector.
-*/
-static string join_vector(vector<string> &vec)
-{
-    string str;
-    for ( long i = 0; i < vec.size(); ++i) str += vec[i] + " ";
-    return str;
-}
 
 /*
     The function tries to execute external application given by 'cmd_str' string.
@@ -267,6 +260,7 @@ int main(int argc, char* argv[])
     vector<string> dec_keyword = {"DEC"};
 
     string input_list_filename;
+    string result_file;
 
     int ret_status = ROTCEN_ERROR_OK;
 
@@ -295,13 +289,16 @@ int main(int argc, char* argv[])
 
 
     po::options_description hidden_opts("");
-    hidden_opts.add_options()("input-file",po::value<string>()->required());
+    hidden_opts.add_options()
+            ("input-file", po::value<string>()->required())
+            ("result-file", po::value<string>());
 
     po::options_description cmd_opts("");
     cmd_opts.add(visible_opts).add(hidden_opts);
 
     po::positional_options_description pos_arg;
     pos_arg.add("input-file", 1);
+    pos_arg.add("result-file", 2);
 
     po::variables_map vm;
 
@@ -376,6 +373,10 @@ int main(int argc, char* argv[])
 
     if (vm.count("input-file")) {
         input_list_filename = vm["input-file"].as<string>();
+    }
+
+    if ( vm.count("result-file") ) {
+        result_file = vm["result-file"].as<string>();
     }
 
 
@@ -683,10 +684,7 @@ int main(int argc, char* argv[])
             obj_cat[1] = current_cat[1]; // X_IMAGE
             obj_cat[2] = current_cat[2]; // Y_IMAGE
 
-//            obj_id[0] = current_cat[0];
-
             string cmd_str;
-            string pp = join_vector(match_pars);
 
             string matchedA = "matched.mtA";
             string matchedB = "matched.mtB";
@@ -709,7 +707,7 @@ int main(int argc, char* argv[])
                 obj_cat[i_cat*3+2] = current_cat[2]; // Y_IMAGE
 
                 cmd_str = ROTCEN_MATCH_EXE + " " + ROTCEN_MATCH_REF_CAT + " 1 2 3 " + *it_file + " 1 2 3 " +
-                        pp + " matchrad=" + to_string(match_tol.back()) + " >/dev/null 2>&1";
+                        match_pars.back() + " matchrad=" + to_string(match_tol.back()) + " >/dev/null 2>&1";
 
                 cout << "  Run match for " + *it_file + " ... ";
 
@@ -776,7 +774,7 @@ int main(int argc, char* argv[])
 
             obj_id[0] = current_cat[0];
 
-            double min_dist = match_tol.back()*match_tol.back()/3600.0; // in degrees
+            double min_dist = match_tol.back()*match_tol.back()/3600.0/3600.0; // in square degrees
             double dist;
 
 //            vector<double> dist(current_cat[0].size());
@@ -800,17 +798,35 @@ int main(int argc, char* argv[])
                 cout << "  0 <--> " << i_cat << ", ";
                 long N_matched = 0;
                 for ( long idx = 0; idx < obj_id[0].size(); ++idx ) {
-                    double min_d = min_dist;
+//                    double min_d = min_dist;
                     long min_ind = 0;
                     for ( long j = 0; j < obj_cat[cat_col].size(); ++j ) {
+
+                        /*
+                            Actually, here one can use strict equality for RA and DEC because of
+                            solve-field RDLS-files consist of coordinates from index-file. By other
+                            words the RA and DEC in 'obj_cat' catalogs are not computed.
+                        */
+
+
+                        if ( (obj_cat[1].at(obj_id[0].at(idx)-1) == obj_cat[cat_col+1].at(j)) &&
+                             (obj_cat[2].at(obj_id[0].at(idx)-1) == obj_cat[cat_col+2].at(j)) ) {
+
+                            current_cat[0].at(N_matched) = obj_id[0].at(idx);
+                            min_ind = obj_cat[cat_col].at(j);
+                            break;
+                        }
+
+                        /*
+                         * The closest points realization ...
+                         *
                         // compute distance ("-1" in the index computation since ID starts from 1!)
                         double rd = obj_cat[1].at(obj_id[0].at(idx)-1) - obj_cat[cat_col+1].at(j);
                         double dd = obj_cat[2].at(obj_id[0].at(idx)-1) - obj_cat[cat_col+2].at(j);
 
                         dist = rd*rd + dd*dd;
 
-//                        if ( dist < min_d ) { // store ID of matched objects
-                        if ( dist == 0 ) { // store ID of matched objects
+                        if ( dist < min_d ) { // store ID of matched objects
                             if ( N_matched == current_cat[0].size() ) {
                                 cerr << "Something wrong while matching objects!\n";
                                 cerr << "It seems there was to big matching radius!\n";
@@ -819,12 +835,12 @@ int main(int argc, char* argv[])
                             current_cat[0].at(N_matched) = obj_id[0].at(idx);
                             min_ind = obj_cat[cat_col].at(j);
                             min_d = dist;     // search for the closest objects
-                            break;
                         }
+
+                        */
                     }
                     if ( min_ind ) {
                         obj_id[i_cat].push_back(min_ind);
-//                        cout << "idx = " << idx << ", min_ind = " << min_ind << endl;
                         ++N_matched;
                     }
                 }
@@ -896,6 +912,8 @@ int main(int argc, char* argv[])
         size_t N_eq = N_circles*(N_objs-1)*N_objs/2; // number of linear equations
 
         try {
+            gsl_error_handler_t *gsl_eh =  gsl_set_error_handler_off(); // turn off GSL default error handler
+
             sys_mat = gsl_matrix_alloc(N_eq,2);
             if ( sys_mat == NULL ) {
                 cerr << "Cannot allocate memory for system matrix!\n";
@@ -932,12 +950,14 @@ int main(int argc, char* argv[])
             for ( size_t i_circ = 0; i_circ < N_circles; ++i_circ ) {
                 for ( size_t i_obj = 0; i_obj < (N_objs-1); ++i_obj ) {
                     size_t i_col1 = i_obj*3;
+                    // "-1" in the index computation since ID starts from 1!
                     double x1 = obj_cat[i_col1 + 1].at(obj_id[i_obj].at(i_circ)-1);
                     double y1 = obj_cat[i_col1 + 2].at(obj_id[i_obj].at(i_circ)-1);
 
                     for ( size_t j = i_obj+1; j < N_objs; ++j ) {
                         size_t i_col2 = j*3;
 
+                        // "-1" in the index computation since ID starts from 1!
                         double x2 = obj_cat[i_col2 + 1].at(obj_id[j].at(i_circ)-1);
                         double y2 = obj_cat[i_col2 + 2].at(obj_id[j].at(i_circ)-1);
 
@@ -976,6 +996,43 @@ int main(int argc, char* argv[])
             cout << "  rotation center: [" << gsl_vector_get(x,0) << ", " << gsl_vector_get(x,1) << "]" <<
                     " (residual: " << sqrt(residual)/(N_eq-1) << ")\n";
 
+            // save result file if given
+
+            if ( !result_file.empty() ) {
+                ofstream rfile(result_file);
+                if ( !rfile.good() ) {
+                    cerr << "Cannot open result file!\n";
+                    throw (int)ROTCEN_ERROR_CANNOT_CREATE_RESULT_FILE;
+                }
+
+
+                rfile << "# \n";
+                rfile << "# Computation of rotation center ('" << boost::filesystem::basename(argv[0]) << "' application, ";
+
+                time_t t = time(nullptr);
+                string tt = asctime(localtime(&t));
+                rfile <<  tt.substr(0,tt.length()-1) << ")\n"; // delete trailng '\n' from asctime-string
+
+                rfile << "# \n";
+                rfile << "# Input file: " << input_list_filename << "\n";
+                rfile << "# Method: ";
+                if ( use_match ) {
+                    rfile << "match application (pixel coordinates matching using triangles)\n";
+                } else {
+                    rfile << "astrometrical solution (astrometry.net 'solve-field' application)\n";
+                }
+                rfile << "# \n";
+                rfile << "# Number of points per circle: " << N_objs << endl;
+                rfile << "# Number of circles: " << N_circles << endl;
+                rfile << "# \n";
+                rfile << "# Rotation center in pixel coordinates: \n";
+
+                rfile << std::fixed << std::setprecision(1) << gsl_vector_get(x,0) << " " <<
+                         std::fixed << std::setprecision(1) << gsl_vector_get(x,1) << endl;
+
+                rfile.close();
+            }
+
         } catch (int err) {
             gsl_matrix_free(sys_mat);
             gsl_vector_free(b);
@@ -990,6 +1047,7 @@ int main(int argc, char* argv[])
         gsl_vector_free(x);
         gsl_vector_free(tau);
         gsl_vector_free(res);
+
 
     } catch (int err) {
         input_list_file.close();
@@ -1010,19 +1068,20 @@ int main(int argc, char* argv[])
             boost::filesystem::remove(ROTCEN_MATCH_REF_CAT);
         }
     } else {
-        for (auto filename = ast_cat.begin(); filename != ast_cat.end(); ++filename) {
-            boost::filesystem::remove(*filename);
+        if ( !dont_delete ) {
+            for (auto filename = ast_cat.begin(); filename != ast_cat.end(); ++filename) {
+                boost::filesystem::remove(*filename);
 
-            boost::filesystem::path pp = *filename;
-            string path = pp.parent_path().string();
-            string file = boost::filesystem::basename(*filename);
+                boost::filesystem::path pp = *filename;
+                string path = pp.parent_path().string();
+                string file = boost::filesystem::basename(*filename);
 
-            boost::filesystem::remove(path + boost::filesystem::path::preferred_separator + file + "-indx.xyls");
-            boost::filesystem::remove(path + boost::filesystem::path::preferred_separator + file + ".rdls");
-            boost::filesystem::remove(path + boost::filesystem::path::preferred_separator + file + ".axy");
-            boost::filesystem::remove(path + boost::filesystem::path::preferred_separator + file + ".solved");
+                boost::filesystem::remove(path + boost::filesystem::path::preferred_separator + file + "-indx.xyls");
+                boost::filesystem::remove(path + boost::filesystem::path::preferred_separator + file + ".rdls");
+                boost::filesystem::remove(path + boost::filesystem::path::preferred_separator + file + ".axy");
+                boost::filesystem::remove(path + boost::filesystem::path::preferred_separator + file + ".solved");
+            }
         }
-
     }
 
 
