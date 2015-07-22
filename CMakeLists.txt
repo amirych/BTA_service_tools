@@ -16,9 +16,12 @@ find_package(Boost REQUIRED COMPONENTS system program_options filesystem)
 
 find_package(CFITSIO REQUIRED)
 
+find_package(GSL REQUIRED)
+
 set(ROTCEN_APP rotation_center)
 add_executable(${ROTCEN_APP} rotation_center.cpp ascii_file.cpp)
 target_link_libraries(${ROTCEN_APP} ${Boost_LIBRARIES})
 target_link_libraries(${ROTCEN_APP} ${CFITSIO_LIBRARIES})
+target_link_libraries(${ROTCEN_APP} ${GSL_LIBRARIES})
 
 message(STATUS ${Boost_LIBRARIES})

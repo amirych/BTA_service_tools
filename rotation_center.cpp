@@ -11,6 +11,7 @@
 #include<boost/filesystem.hpp>
 
 #include<fitsio.h>
+#include<gsl/gsl_linalg.h>
 
 #include"ascii_file.h"
 
@@ -33,6 +34,7 @@ namespace po = boost::program_options;
 #define ROTCEN_ERROR_EMPTY_CAT 110
 #define ROTCEN_ERROR_BAD_ALLOC 120
 #define ROTCEN_ERROR_BAD_MATCH 130
+#define ROTCEN_ERROR_CANNOT_SOLVE 140
 
 #define ROTCEN_ERROR_CFITSIO 1000 // displacement for CFITSIO error code
 
@@ -266,6 +268,8 @@ int main(int argc, char* argv[])
 
     string input_list_filename;
 
+    int ret_status = ROTCEN_ERROR_OK;
+
     // commandline options and arguments definitions
 
     po::options_description visible_opts("Allowed options");
@@ -313,7 +317,7 @@ int main(int argc, char* argv[])
                                 "[--use-sex] [--sex-pars str]\n" << skip_str <<
                                 "[--ra num] [--deg num] [--search-radius num]\n" << skip_str <<
                                 "[--ra-key str] [--dec-key str] [--ra-in-hours] [--ra-dec-str]\n" << skip_str <<
-                                "[--solve-field-pars str] [--solve-field-config str] input_list\n\n";
+                                "[--solve-field-pars str] [--solve-field-config str] [--save-wcs] input_list\n\n";
 
             cout << visible_opts << "\n";
             return ROTCEN_ERROR_HELP;
@@ -344,9 +348,6 @@ int main(int argc, char* argv[])
 
     if ( vm.count("threshold") ) {
         sex_thresh = vm["threshold"].as<vector<float> >();
-        for ( int i = 0; i < sex_thresh.size(); ++i ) cout << "THRESH = " << sex_thresh[i] << "\n";
-    } else {
-        cout << "THRESH = " << sex_thresh.front() << ".\n";
     }
 
     if ( vm.count("radius") ) {
@@ -374,8 +375,6 @@ int main(int argc, char* argv[])
     }
 
     if (vm.count("input-file")) {
-        cout << "Input files are: "
-             << vm["input-file"].as<string>() << "\n";
         input_list_filename = vm["input-file"].as<string>();
     }
 
@@ -642,14 +641,14 @@ int main(int argc, char* argv[])
 
 //                cout << cmd_str << endl;
 
-//                int ret = run_external(cmd_str); // try to run command 'solve-field'
-//                bool ok = boost::filesystem::exists(solved_file);
-//                if ( ret || !ok ) {
-//                    cerr << "ret=" << ret << endl;
-//                    cout << "Failed!\n";
-//                    cerr << "Something wrong while run application 'solve-field'!\n";
-//                    throw (int)ROTCEN_ERROR_APP_FAILED;
-//                }
+                int ret = run_external(cmd_str); // try to run command 'solve-field'
+                bool ok = boost::filesystem::exists(solved_file);
+                if ( ret || !ok ) {
+                    cerr << "ret=" << ret << endl;
+                    cout << "Failed!\n";
+                    cerr << "Something wrong while run application 'solve-field'!\n";
+                    throw (int)ROTCEN_ERROR_APP_FAILED;
+                }
 
                 cout << "OK!\n";
 
@@ -753,11 +752,11 @@ int main(int argc, char* argv[])
                 boost::filesystem::copy_file(matchedA,ROTCEN_MATCH_REF_CAT,boost::filesystem::copy_option::overwrite_if_exists);
             }
 
-            cout << endl << endl;
-            for (size_t k = 0; k < input_files.size(); ++k ) {
-                cout << obj_cat[3*k+1].at(obj_id[k].at(0)-1) << ", " << obj_cat[3*k+2].at(obj_id[k].at(0)-1) << ", ";
-            }
-            cout << endl << endl;
+//            cout << endl << endl;
+//            for (size_t k = 0; k < input_files.size(); ++k ) {
+//                cout << obj_cat[3*k+1].at(obj_id[k].at(0)-1) << ", " << obj_cat[3*k+2].at(obj_id[k].at(0)-1) << ", ";
+//            }
+//            cout << endl << endl;
 
         } else { // use of astrometrical solution
             cout << "\nMatching objects using astrometrical solution:\n";
@@ -882,24 +881,150 @@ int main(int argc, char* argv[])
 
         // compute rotation center
 
+
+        cout << "\nSolving ... ";
+
+        gsl_matrix* sys_mat = NULL;
+        gsl_vector *b = NULL;
+        gsl_vector *x = NULL;
+        gsl_vector *tau = NULL;
+        gsl_vector *res = NULL;
+
+        size_t N_circles = obj_id[0].size();
+        size_t N_objs = obj_id.size();
+
+        size_t N_eq = N_circles*(N_objs-1)*N_objs/2; // number of linear equations
+
+        try {
+            sys_mat = gsl_matrix_alloc(N_eq,2);
+            if ( sys_mat == NULL ) {
+                cerr << "Cannot allocate memory for system matrix!\n";
+                throw (int)ROTCEN_ERROR_BAD_ALLOC;
+            }
+
+            b = gsl_vector_alloc(N_eq);
+            if ( b == NULL ) {
+                cerr << "Cannot allocate memory for system right-hand part!\n";
+                throw (int)ROTCEN_ERROR_BAD_ALLOC;
+            }
+
+            x = gsl_vector_alloc(2);
+            if ( x == NULL ) {
+                cerr << "Cannot allocate memory for system solution vector!\n";
+                throw (int)ROTCEN_ERROR_BAD_ALLOC;
+            }
+
+            tau = gsl_vector_alloc(2);
+            if ( tau == NULL ) {
+                cerr << "Cannot allocate memory for QR decomposition tau vector!\n";
+                throw (int)ROTCEN_ERROR_BAD_ALLOC;
+            }
+
+            res = gsl_vector_alloc(N_eq);
+            if ( res == NULL ) {
+                cerr << "Cannot allocate memory for system residual vector!\n";
+                throw (int)ROTCEN_ERROR_BAD_ALLOC;
+            }
+
+
+            // fill system matrix and right-hand part:
+            size_t i = 0;
+            for ( size_t i_circ = 0; i_circ < N_circles; ++i_circ ) {
+                for ( size_t i_obj = 0; i_obj < (N_objs-1); ++i_obj ) {
+                    size_t i_col1 = i_obj*3;
+                    double x1 = obj_cat[i_col1 + 1].at(obj_id[i_obj].at(i_circ)-1);
+                    double y1 = obj_cat[i_col1 + 2].at(obj_id[i_obj].at(i_circ)-1);
+
+                    for ( size_t j = i_obj+1; j < N_objs; ++j ) {
+                        size_t i_col2 = j*3;
+
+                        double x2 = obj_cat[i_col2 + 1].at(obj_id[j].at(i_circ)-1);
+                        double y2 = obj_cat[i_col2 + 2].at(obj_id[j].at(i_circ)-1);
+
+
+                        gsl_matrix_set(sys_mat,i,0,2.0*(x2-x1));
+                        gsl_matrix_set(sys_mat,i,1,2.0*(y2-y1));
+
+                        gsl_vector_set(b,i,x2*x2+y2*y2-x1*x1-y1*y1);
+                        ++i;
+                    }
+
+                }
+            }
+
+
+            int ret = gsl_linalg_QR_decomp(sys_mat,tau);
+            if ( ret ) {
+                cerr << "Something wrong while QR decomposition!\n";
+                throw ROTCEN_ERROR_CANNOT_SOLVE;
+            }
+
+            ret = gsl_linalg_QR_lssolve(sys_mat,tau,b,x,res);
+            if ( ret ) {
+                cerr << "Something wrong while system solving!\n";
+                throw ROTCEN_ERROR_CANNOT_SOLVE;
+            }
+
+            // compute residual
+            double residual = 0.0;
+            for ( size_t i = 0; i < N_eq; ++i ) {
+                residual += gsl_vector_get(res,i)*gsl_vector_get(res,i);
+            }
+
+            cout << "OK!\n\n";
+            cout << "Solution: " << endl;
+            cout << "  rotation center: [" << gsl_vector_get(x,0) << ", " << gsl_vector_get(x,1) << "]" <<
+                    " (residual: " << sqrt(residual)/(N_eq-1) << ")\n";
+
+        } catch (int err) {
+            gsl_matrix_free(sys_mat);
+            gsl_vector_free(b);
+            gsl_vector_free(x);
+            gsl_vector_free(tau);
+            gsl_vector_free(res);
+            throw err;
+        }
+
+        gsl_matrix_free(sys_mat);
+        gsl_vector_free(b);
+        gsl_vector_free(x);
+        gsl_vector_free(tau);
+        gsl_vector_free(res);
+
     } catch (int err) {
         input_list_file.close();
-        if ( use_match && !dont_delete ) { // delete temporary files
+        ret_status = err;
+    }
+
+    // delete temporary files
+    if ( use_match ) {
+        if ( !dont_delete ) {
             boost::filesystem::remove(ROTCEN_SEX_PARAM_FILE);
             for (auto filename = sex_cats.begin(); filename != sex_cats.end(); ++filename) {
                 boost::filesystem::remove(*filename);
             }
+            boost::filesystem::remove("matched.mtA");
+            boost::filesystem::remove("matched.mtB");
+            boost::filesystem::remove("matched.unA");
+            boost::filesystem::remove("matched.unB");
+            boost::filesystem::remove(ROTCEN_MATCH_REF_CAT);
         }
-        return err;
-    }
-
-    // delete temporary files
-    if ( use_match && !dont_delete ) {
-        boost::filesystem::remove(ROTCEN_SEX_PARAM_FILE);
-        for (auto filename = sex_cats.begin(); filename != sex_cats.end(); ++filename) {
+    } else {
+        for (auto filename = ast_cat.begin(); filename != ast_cat.end(); ++filename) {
             boost::filesystem::remove(*filename);
+
+            boost::filesystem::path pp = *filename;
+            string path = pp.parent_path().string();
+            string file = boost::filesystem::basename(*filename);
+
+            boost::filesystem::remove(path + boost::filesystem::path::preferred_separator + file + "-indx.xyls");
+            boost::filesystem::remove(path + boost::filesystem::path::preferred_separator + file + ".rdls");
+            boost::filesystem::remove(path + boost::filesystem::path::preferred_separator + file + ".axy");
+            boost::filesystem::remove(path + boost::filesystem::path::preferred_separator + file + ".solved");
         }
+
     }
 
-    return ROTCEN_ERROR_OK;
+
+    return ret_status;
 }
