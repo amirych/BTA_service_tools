@@ -314,7 +314,7 @@ int main(int argc, char* argv[])
                                 "[--use-sex] [--sex-pars str]\n" << skip_str <<
                                 "[--ra num] [--deg num] [--search-radius num]\n" << skip_str <<
                                 "[--ra-key str] [--dec-key str] [--ra-in-hours] [--ra-dec-str]\n" << skip_str <<
-                                "[--solve-field-pars str] [--solve-field-config str] [--save-wcs] input_list\n\n";
+                                "[--solve-field-pars str] [--solve-field-config str] [--save-wcs] input_list [result_file]\n\n";
 
             cout << visible_opts << "\n";
             return ROTCEN_ERROR_HELP;
@@ -527,6 +527,7 @@ int main(int argc, char* argv[])
         for ( auto it_file = input_files.begin(); it_file != input_files.end(); ++it_file ) {
             boost::filesystem::path pp = *it_file;
             string path = pp.parent_path().string();
+            if ( path.empty() ) path = ".";
             string file = boost::filesystem::basename(*it_file);
 
             if ( use_match ) { // skip astrometry, just detect objects using sextractor
@@ -863,6 +864,7 @@ int main(int argc, char* argv[])
             for ( it_file = ast_cat.begin(); it_file != ast_cat.end(); ++it_file, ++i_cat ) {
                 boost::filesystem::path pp = *it_file;
                 string path = pp.parent_path().string();
+                if ( path.empty() ) path = ".";
                 string file = boost::filesystem::basename(*it_file);
 
                 file = path + boost::filesystem::path::preferred_separator + file + "-indx.xyls";
