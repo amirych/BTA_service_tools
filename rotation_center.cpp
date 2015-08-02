@@ -432,7 +432,8 @@ int main(int argc, char* argv[])
             solve_field_config.back() = vm["solve-field-config"].as<vector<float> >().back();
         }
 
-        solve_field_pars.back() += " --config " + solve_field_config.back();
+//        solve_field_pars.back() += " --config " + solve_field_config.back();
+        solve_field_pars.back() += " -b " + solve_field_config.back();
 
         if ( vm.count("ra") && vm.count("dec") ) { // it makes sense only if the both are given
             use_guess_radec = true;
