@@ -11,6 +11,7 @@
 #define BOOST_NO_CXX11_SCOPED_ENUMS // special definition to fix Boost's copy_file and -std=c++11 linking error
 #include<boost/program_options.hpp>
 #include<boost/filesystem.hpp>
+#include<boost/algorithm/string.hpp>
 
 #include<fitsio.h>
 #include<gsl/gsl_linalg.h>
@@ -507,6 +508,8 @@ int main(int argc, char* argv[])
         // check input files
 
         while ( (input_list_file >> str).good() ) {
+            boost::algorithm::trim(str);
+            if ( str[0] == '#' ) continue; // comment
             if ( !boost::filesystem::exists(str) ) {
                 cerr << "Cannot find " << str.c_str() << " input file!\n";
                 throw (int)ROTCEN_ERROR_INVALID_FILENAME;
