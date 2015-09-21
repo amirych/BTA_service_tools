@@ -220,7 +220,7 @@ static float sex2deg(string str, bool hours = false)
 
     for ( int i = 0; i < 3; ++i, p *= 60.0 ) {
         val += stof(s,&idx)/p;
-        s = s.substr(idx);
+        if (idx < s.length() ) s = s.substr(idx+1);
     }
 
     if ( hours ) val *= 15.0;
@@ -591,6 +591,12 @@ int main(int argc, char* argv[])
                         throw ROTCEN_ERROR_CFITSIO + fits_status;
                     }
                     if ( vm.count("ra-dec-str") ) { // RA should be in sexagesimal form
+                        if (regex_match(key_value,regex("^ *'.+' *$"))) { // for SCORPIO format of the FITS keyword
+                            string ss = key_value;
+                            boost::algorithm::trim(ss);
+                            size_t len = ss.copy(key_value,ss.length()-2,1);
+                            key_value[len] = '\0';
+                        }
                         if (!regex_match(key_value,regex("^ *\\+?\\d\\d:\\d\\d:\\d\\d(\\.{1}\\d*)? *$")) ) { // is it in sexagesimal?
                             cerr << "Invalid RA value in " << ra_keyword.back() << " FITS-keyword of " << *it_file << " file!\n";
                             fits_close_file(file,&fits_status);
@@ -619,6 +625,12 @@ int main(int argc, char* argv[])
                         throw ROTCEN_ERROR_CFITSIO + fits_status;
                     }
                     if ( vm.count("ra-dec-str") ) { // DEC should be in sexagesimal form
+                        if (regex_match(key_value,regex("^ *'.+' *$"))) { // for SCORPIO format of the FITS keyword
+                            string ss = key_value;
+                            boost::algorithm::trim(ss);
+                            size_t len = ss.copy(key_value,ss.length()-2,1);
+                            key_value[len] = '\0';
+                        }
                         if (!regex_match(key_value,regex("^ *[+-]?\\d\\d:\\d\\d:\\d\\d(\\.{1}\\d*)? *$")) ) { // is it in sexagesimal?
                             cerr << "Invalid DEC value in " << dec_keyword.back() << " FITS-keyword of " << *it_file << " file!\n";
                             fits_close_file(file,&fits_status);
@@ -642,6 +654,7 @@ int main(int argc, char* argv[])
                 jmp:
 
                 cmd_str +=  " " + *it_file + "  >/dev/null 2>&1";
+//                cmd_str +=  " " + *it_file
 
                 cout << "  Run solve-field for " + *it_file + " ... ";
 
@@ -712,7 +725,7 @@ int main(int argc, char* argv[])
                 obj_cat[i_cat*3+2] = current_cat[2]; // Y_IMAGE
 
                 cmd_str = ROTCEN_MATCH_EXE + " " + ROTCEN_MATCH_REF_CAT + " 1 2 3 " + *it_file + " 1 2 3 " +
-                        match_pars.back() + " matchrad=" + to_string(match_tol.back()) + " >/dev/null 2>&1";
+                match_pars.back() + " matchrad=" + to_string(match_tol.back()) + " >/dev/null 2>&1";
 
                 cout << "  Run match for " + *it_file + " ... ";
 
